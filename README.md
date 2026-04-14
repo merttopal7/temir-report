@@ -13,9 +13,11 @@
 - [Quick Start](#quick-start)
 - [API Reference](#api-reference)
 - [Data Format](#data-format)
+  - [Passing a JSON String directly](#passing-a-json-string-directly)
 - [Output Formats](#output-formats)
 - [Architecture Deep-Dive](#architecture-deep-dive)
 - [Configuration Reference](#configuration-reference)
+  - [USE_SHARP — Image Processing Flag](#use_sharp--image-processing-flag)
 - [Dependencies](#dependencies)
 - [Performance Notes](#performance-notes)
 - [Troubleshooting](#troubleshooting)
@@ -101,6 +103,8 @@ npm install
 ```
 
 > **Note:** `sharp` has native bindings and requires compilation tools (`node-gyp`). On Windows, install the [Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) if the install fails.
+>
+> If you cannot install `sharp` (unsupported platform, restricted CI environment, etc.), set [`USE_SHARP = false`](#use_sharp--image-processing-flag) in `utils/StreamUtils.js`. Sharp will not be `require()`d at all and no gyp or native binary error will occur.
 
 ---
 
@@ -117,7 +121,7 @@ This generates three files from `data.json`:
 - `executive_report.pdf`
 - `executive_report.xlsx`
 
-### Use as a module
+### Use as a module — file path source
 
 ```javascript
 const ReportGenerator = require('./index.js');
@@ -127,7 +131,7 @@ const ReportGenerator = require('./index.js');
 
   // Generate an HTML Dashboard
   await generator
-    .source('data.json')           // path to JSON file (or a JSON string)
+    .source('data.json')           // absolute or relative path to a JSON file
     .setTitle('Q2 Executive Report')
     .type(ReportGenerator.HTML)    // 'html' | 'pdf' | 'excel'
     .generate('report.html');
@@ -148,6 +152,42 @@ const ReportGenerator = require('./index.js');
 })();
 ```
 
+### Use as a module — inline JSON string source
+
+If the data is already in memory (e.g. fetched from an API, built programmatically, or small enough to hold in RAM), pass the **raw JSON string** directly to `.source()` instead of a file path. The generator detects that the value is not an existing file path and wraps it in a `Readable.from()` stream automatically.
+
+```javascript
+const ReportGenerator = require('./index.js');
+
+(async () => {
+  // Build or fetch your data as a plain JavaScript value
+  const data = [
+    {
+      title: 'Sales Q2',
+      columns: [
+        { title: 'Region', type: 'text' },
+        { title: 'Revenue', type: 'text' },
+      ],
+      items: [
+        { region: 'North', revenue: '$1.2M' },
+        { region: 'South', revenue: '$0.9M' },
+      ],
+    },
+  ];
+
+  // Serialize to a JSON string and pass it as the source
+  const jsonString = JSON.stringify(data);
+
+  await new ReportGenerator()
+    .source(jsonString)            // ← raw JSON string, not a file path
+    .setTitle('Sales Report')
+    .type(ReportGenerator.HTML)
+    .generate('sales_report.html');
+})();
+```
+
+> **Note:** When passing a JSON string, the entire payload is held in memory. Only use this for datasets that comfortably fit in RAM. For large datasets (100 MB+) always prefer a file path so the streaming pipeline can process the data incrementally.
+
 ---
 
 ## API Reference
@@ -156,14 +196,14 @@ const ReportGenerator = require('./index.js');
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `source` | `string` | `undefined` | File path to JSON source. Can be overridden with `.source()`. |
+| `source` | `string` | `undefined` | File path **or raw JSON string**. Can be overridden with `.source()`. |
 | `options` | `object` | `{}` | Optional layout overrides (see [Configuration Reference](#configuration-reference)). |
 
 ### Instance Methods (Fluent / Chainable)
 
 | Method | Argument | Description |
 |---|---|---|
-| `.source(data)` | `string` | Set or override the JSON source file path. |
+| `.source(data)` | `string` | File path to a JSON file **or a raw serialized JSON string**. If the value is a path to an existing file, a read stream is opened; otherwise the string itself is streamed as-is. |
 | `.setTitle(title)` | `string` | Set the global report title (used in HTML `<h1>`, PDF cover page). |
 | `.type(format)` | `string` | Set output format. Use the static constants below. |
 | `.generate(outputFileName)` | `string` | Trigger generation. Returns a `Promise<void>`. |
@@ -232,6 +272,24 @@ The generator expects the data source to be a **JSON array of group objects**. E
 | `items` | ✅ | Array of record objects. Keys must appear in the same positional order as `columns`. |
 
 > **Important for image columns:** The value must be an **absolute filesystem path** to an image file that exists at generation time (e.g., `C:\\Users\\me\\photos\\avatar.png`). Relative paths and URLs are not supported.
+
+### Passing a JSON String directly
+
+The `.source()` method accepts either a **file path** or a **serialized JSON string**. The decision is made by `utils/StreamUtils.js → getStream()`:
+
+```javascript
+function getStream(source) {
+  // If the value is a path to an existing file → open a read stream (memory-efficient)
+  if (typeof source === 'string' && fs.existsSync(source)) return fs.createReadStream(source);
+  // Otherwise treat the value as raw content and wrap it in a readable stream
+  return Readable.from([source]);
+}
+```
+
+| Source type | How it is handled | Best for |
+|---|---|---|
+| File path (`'data.json'`) | `fs.createReadStream()` — reads the file chunk by chunk | Large files, 10 GB+ datasets |
+| JSON string (`'[{"title":…}]'`) | `Readable.from([string])` — the whole string is in RAM | Small datasets, API responses, test fixtures |
 
 ---
 
@@ -428,6 +486,38 @@ const generator = new ReportGenerator('data.json', {
 });
 await generator.type('pdf').generate('financial_report.pdf');
 ```
+
+---
+
+### `USE_SHARP` — Image Processing Flag
+
+Defined in `utils/StreamUtils.js`. It is the **single place** to control whether `sharp` is used anywhere in the project.
+
+```javascript
+// utils/StreamUtils.js
+const USE_SHARP = true; // ← change to false to disable sharp entirely
+```
+
+| Value | Behaviour |
+|---|---|
+| `true` *(default)* | `sharp` is `require()`d and used to resize + compress images before embedding. Produces the smallest output files. Requires the `sharp` native binary (node-gyp). |
+| `false` | `sharp` is **never loaded** — no `require('sharp')` call is made at all. Images are read from disk with `fs.readFileSync()` and embedded as-is. No native binary or node-gyp involvement. |
+
+**Per-generator behaviour when `USE_SHARP = false`:**
+
+| Generator | Image handling without sharp |
+|---|---|
+| `HtmlGenerator` | Raw file bytes → base64 → CSS `content: url("data:image/ext;base64,…")`. The CSS class deduplication cache still applies. |
+| `ExcelGenerator` | Raw file bytes transferred directly to `workbook.addImage()`. Extension is inferred from the file name (`jpg` is normalized to `jpeg` for ExcelJS). |
+| `PdfGenerator` | **Unaffected** — PDFKit's `doc.image()` reads local files natively and never calls `sharp`. |
+
+**When to set `USE_SHARP = false`:**
+- Your environment cannot compile native Node.js addons (restricted CI, certain Docker images, shared hosting).
+- You are running on an architecture not supported by the current `sharp` release.
+- Generation speed is more important than output file size.
+- You are working with images that are already correctly sized and do not need resizing.
+
+> ⚠️ **File size warning:** Embedding uncompressed images significantly increases the size of `.html` and `.xlsx` outputs. A single 4 MB PNG will add 4 MB to the report versus ~30 KB when processed by sharp.
 
 ---
 

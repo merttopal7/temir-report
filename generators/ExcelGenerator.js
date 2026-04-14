@@ -1,10 +1,11 @@
 const fs = require('fs');
 const ExcelJS = require('exceljs');
-const sharp = require('sharp');
 const { chain } = require('stream-chain');
 const { parser } = require('stream-json');
 const Assembler = require('stream-json/assembler.js');
-const { getStream } = require('../utils/StreamUtils');
+const { getStream, USE_SHARP } = require('../utils/StreamUtils');
+// sharp is only loaded when USE_SHARP is enabled to avoid native binary errors
+const sharp = USE_SHARP ? require('sharp') : null;
 
 class ExcelGenerator {
   constructor(source, outputFileName) { this.source = source; this.outputFileName = outputFileName; }
@@ -53,16 +54,25 @@ class ExcelGenerator {
                   const colInfo = currentColumns[idx] || {};
                   if (colInfo.type === 'image' && value && fs.existsSync(value)) {
                     try {
-                      let imgId; 
-                      if (imageCache.has(value)) { 
-                        imgId = imageCache.get(value); 
-                      } else { 
+                      let imgId;
+                      if (imageCache.has(value)) {
+                        imgId = imageCache.get(value);
+                      } else if (USE_SHARP) {
+                        // --- sharp path: resize to thumbnail before embedding ---
                         const buffer = await sharp(value)
                           .resize(120, 120, { fit: 'inside' })
                           .jpeg({ quality: 75 })
                           .toBuffer();
-                        imgId = workbook.addImage({ buffer, extension: 'jpeg' }); 
-                        imageCache.set(value, imgId); 
+                        imgId = workbook.addImage({ buffer, extension: 'jpeg' });
+                        imageCache.set(value, imgId);
+                      } else {
+                        // --- no-sharp path: embed raw file bytes ---
+                        const buffer = fs.readFileSync(value);
+                        const ext = value.split('.').pop().toLowerCase();
+                        // ExcelJS supports: jpeg, png, gif, bmp, tiff
+                        const extension = ext === 'jpg' ? 'jpeg' : ext;
+                        imgId = workbook.addImage({ buffer, extension });
+                        imageCache.set(value, imgId);
                       }
                       currentSheet.addImage(imgId, { tl: { col: idx, row: row.number - 1 }, ext: { width: 60, height: 60 }, editAs: 'oneCell' });
                       row.getCell(idx + 1).value = "";

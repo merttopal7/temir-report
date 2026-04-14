@@ -1,9 +1,10 @@
 const fs = require('fs');
-const sharp = require('sharp');
 const { chain } = require('stream-chain');
 const { parser } = require('stream-json');
 const Assembler = require('stream-json/assembler.js');
-const { getStream } = require('../utils/StreamUtils');
+const { getStream, USE_SHARP } = require('../utils/StreamUtils');
+// sharp is only loaded when USE_SHARP is enabled to avoid native binary errors
+const sharp = USE_SHARP ? require('sharp') : null;
 
 class StreamingHtmlGenerator {
   constructor(source, outputFileName, options = {}) {
@@ -244,19 +245,33 @@ class StreamingHtmlGenerator {
                         this.imageOrderId++;
                         const imgClass = `img-asset-${this.imageOrderId}`;
                         
-                        try {
-                          const compressed = await sharp(value)
-                            .resize(300, 300, { fit: 'inside', withoutEnlargement: true })
-                            .webp({ quality: 80 })
-                            .toBuffer();
-                          const b64 = compressed.toString('base64');
-                          out.write(`</script><style>.${imgClass} { content: url("data:image/webp;base64,${b64}"); }</style><script class="group-data-store" type="application/json">`);
-                          this.imageCache.set(value, imgClass);
-                        } catch (sErr) {
-                          const b64Raw = fs.readFileSync(value).toString('base64');
-                          const ext = value.split('.').pop();
-                          out.write(`</script><style>.${imgClass} { content: url("data:image/${ext};base64,${b64Raw}"); }</style><script class="group-data-store" type="application/json">`);
-                          this.imageCache.set(value, imgClass);
+                        if (USE_SHARP) {
+                          // --- sharp path: resize + convert to WebP ---
+                          try {
+                            const compressed = await sharp(value)
+                              .resize(300, 300, { fit: 'inside', withoutEnlargement: true })
+                              .webp({ quality: 80 })
+                              .toBuffer();
+                            const b64 = compressed.toString('base64');
+                            out.write(`</script><style>.${imgClass} { content: url("data:image/webp;base64,${b64}"); }</style><script class="group-data-store" type="application/json">`);
+                            this.imageCache.set(value, imgClass);
+                          } catch (sErr) {
+                            const b64Raw = fs.readFileSync(value).toString('base64');
+                            const ext = value.split('.').pop();
+                            out.write(`</script><style>.${imgClass} { content: url("data:image/${ext};base64,${b64Raw}"); }</style><script class="group-data-store" type="application/json">`);
+                            this.imageCache.set(value, imgClass);
+                          }
+                        } else {
+                          // --- no-sharp path: embed raw file bytes ---
+                          try {
+                            const b64Raw = fs.readFileSync(value).toString('base64');
+                            const ext = value.split('.').pop().toLowerCase();
+                            out.write(`</script><style>.${imgClass} { content: url("data:image/${ext};base64,${b64Raw}"); }</style><script class="group-data-store" type="application/json">`);
+                            this.imageCache.set(value, imgClass);
+                          } catch (readErr) {
+                            // file unreadable — skip image embedding for this path
+                            this.imageCache.set(value, null);
+                          }
                         }
                       }
                       const registeredClass = this.imageCache.get(value);
