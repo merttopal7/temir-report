@@ -1,0 +1,165 @@
+const fs = require('fs');
+const PDFDocument = require('pdfkit');
+const { chain } = require('stream-chain');
+const { parser } = require('stream-json');
+const Assembler = require('stream-json/assembler.js');
+const { getStream, layoutConfig } = require('../utils/StreamUtils');
+
+class StreamingPdfGenerator {
+  constructor(source, outputFileName, options) {
+    this.source = source;
+    this.outputFileName = outputFileName;
+    this.layout = { ...layoutConfig, ...options };
+    this.reportTitle = options.reportTitle || "Report";
+  }
+
+  _performDrawHeaders(doc, state) {
+    state.tableStartY = doc.y; doc.y += this.layout.tablePadding;
+    if (state.currentTitle && state.activeTitleOnPage !== state.currentTitle) {
+      const anchor = state.currentTitle.replace(/\s+/g, '_');
+      if (state.lastLinkedTitle !== state.currentTitle) {
+        if (state.isReal) { try { doc.addNamedDestination(anchor); doc.outline.addItem(`${state.currentTitle} | Page ${state.pageNum}`); } catch (e) {} }
+        state.lastLinkedTitle = state.currentTitle;
+      }
+      doc.fontSize(this.layout.headerTitleSize).font('Helvetica-Bold').text(`${state.currentTitle} | Page ${state.pageNum}`, { indent: this.layout.tablePadding });
+      doc.moveDown(0.5); state.activeTitleOnPage = state.currentTitle;
+    }
+    doc.fontSize(state.dynamicFontSize).font('Helvetica-Bold');
+    const y = doc.y; let x = state.tableStartX + this.layout.tablePadding;
+    state.headers.forEach((h, i) => { doc.text(h.title, x, y, { width: state.columnWidths[i] - 5, align: 'left' }); x += state.columnWidths[i]; });
+    doc.y += state.dynamicFontSize + 3;
+    if (state.isReal) { doc.lineWidth(1).strokeColor('#000000').moveTo(state.tableStartX, doc.y).lineTo(state.tableStartX + state.fullTableWidth, doc.y).stroke(); }
+    doc.y += (this.layout.tablePadding / 2); doc.font('Helvetica');
+  }
+
+  _performDrawRow(doc, record, state) {
+    let maxHeight = 0; const values = Object.values(record); doc.fontSize(state.dynamicFontSize);
+    values.forEach((val, i) => {
+      let h = (state.headers[i].type === 'image') ? this.layout.imageHeight : doc.heightOfString(String(val ?? ''), { width: state.columnWidths[i] - 5 });
+      if (h > maxHeight) maxHeight = h;
+    });
+    if (doc.y + maxHeight + this.layout.tablePadding > doc.page.height - this.layout.margins.bottom) {
+      if (state.isReal) { doc.lineWidth(1.5).strokeColor('#000000').roundedRect(state.tableStartX, state.tableStartY, state.fullTableWidth, (doc.y - state.tableStartY) + this.layout.tablePadding, 8).stroke(); }
+      this._performDrawFooter(doc, state);
+      state.pageNum++; doc.addPage({ margins: this.layout.margins, size: 'A4', layout: state.docLayout });
+      state.activeTitleOnPage = ''; this._performDrawHeaders(doc, state);
+    }
+    const startY = doc.y; let x = state.tableStartX + this.layout.tablePadding;
+    values.forEach((val, i) => {
+      if (state.isReal) {
+        if (state.headers[i].type === 'image' && val) {
+          try { doc.image(val, x, startY, { fit: [state.columnWidths[i] - 5, this.layout.imageHeight] }); } catch (e) { doc.text("[Img Error]", x, startY); }
+        } else { doc.text(String(val ?? ''), x, startY, { width: state.columnWidths[i] - 5, align: 'left' }); }
+      }
+      x += state.columnWidths[i];
+    });
+    doc.y = startY + maxHeight + this.layout.rowGap;
+    if (state.isReal) { doc.lineWidth(0.5).strokeColor('#e0e0e0').moveTo(state.tableStartX, doc.y - 2).lineTo(state.tableStartX + state.fullTableWidth, doc.y - 2).stroke(); }
+    doc.moveDown(0.2);
+  }
+
+  _performDrawFooter(doc, state) {
+    if (!state.isReal) return;
+    const bm = doc.page.margins.bottom; doc.page.margins.bottom = 0;
+    doc.fontSize(10).font('Helvetica');
+    const footerY = doc.page.height - this.layout.footerHeight;
+    const pageWidth = doc.page.height; // Error in my previous summary, fixed logic below
+    const docPageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const pageText = `Page ${state.pageNum}  |  `; const linkText = "Go To Table Of Contents";
+    const totalWidth = doc.widthOfString(pageText) + doc.widthOfString(linkText);
+    const centeredStartX = doc.page.margins.left + (docPageWidth - totalWidth) / 2;
+    doc.fillColor(this.layout.secondaryColor).text(pageText, centeredStartX, footerY, { continued: true });
+    doc.fillColor(this.layout.themeColor).text(linkText, { underline: true, goTo: 'TOC_TOP' });
+    doc.page.margins.bottom = bm; doc.fillColor('black');
+  }
+
+  async generate() {
+    console.log(`Analyzing PDF structure...`);
+    const docSim = new PDFDocument({ margin: 30, size: 'A4' });
+    const rawStreamSim = chain([getStream(this.source), parser()]);
+    let reportMap = [], currentEntry = null, isTitleKey = false, inColumnsArray = false, inItemsArray = false, arrayDepth = 0, objAssembler = null;
+    let stateSim = {
+      isReal: false, pageNum: 2, currentTitle: '', activeTitleOnPage: '', lastLinkedTitle: '',
+      headers: [], columnWidths: [], currentColumns: [], dynamicFontSize: 10, docLayout: 'portrait', tableStartX: 30, fullTableWidth: 0
+    };
+    await new Promise((res) => {
+      rawStreamSim.on('data', token => {
+        if (!inColumnsArray && !inItemsArray) {
+          if (token.name === 'keyValue' && token.value === 'title') { isTitleKey = true; return; }
+          if (isTitleKey && token.name === 'stringValue') { currentEntry = { title: token.value, startPage: 0, endPage: 0 }; stateSim.currentTitle = token.value; isTitleKey = false; return; }
+        }
+        if (token.name === 'keyValue' && token.value === 'columns') { inColumnsArray = true; objAssembler = new Assembler(); return; }
+        if (inColumnsArray) { objAssembler.consume(token); if (objAssembler.done) { stateSim.currentColumns = objAssembler.current; objAssembler = null; inColumnsArray = false; } return; }
+        if (token.name === 'keyValue' && token.value === 'items') { inItemsArray = true; arrayDepth = 0; return; }
+        if (inItemsArray) {
+          if (token.name === 'startArray') { arrayDepth++; if (arrayDepth === 1) return; }
+          if (token.name === 'endArray') { arrayDepth--; if (arrayDepth === 0) { inItemsArray = false; if (currentEntry) { currentEntry.endPage = stateSim.pageNum; reportMap.push(currentEntry); } return; } }
+          if (arrayDepth === 1 && token.name === 'startObject') { objAssembler = new Assembler(); objAssembler.consume(token); }
+          else if (objAssembler) {
+            objAssembler.consume(token);
+            if (objAssembler.done) {
+              const record = objAssembler.current; objAssembler = null;
+              if (currentEntry.startPage === 0) {
+                const keysArr = Object.keys(record);
+                stateSim.headers = keysArr.map((k, i) => { const col = (stateSim.currentColumns && stateSim.currentColumns[i]) ? stateSim.currentColumns[i] : {}; return { title: col.title || k.replace(/_/g, ' ').toUpperCase(), type: col.type || 'text' }; });
+                stateSim.docLayout = stateSim.headers.length > 7 ? 'landscape' : 'portrait'; stateSim.dynamicFontSize = stateSim.headers.length > 12 ? 6 : 10;
+                if (reportMap.length > 0) stateSim.pageNum++; currentEntry.startPage = stateSim.pageNum;
+                docSim.addPage({ margins: this.layout.margins, size: 'A4', layout: stateSim.docLayout });
+                stateSim.fullTableWidth = docSim.page.width - this.layout.margins.left - this.layout.margins.right; stateSim.tableStartX = this.layout.margins.left;
+                stateSim.columnWidths = stateSim.headers.map(() => (stateSim.fullTableWidth - (this.layout.tablePadding * 2)) / stateSim.headers.length);
+                stateSim.activeTitleOnPage = ''; this._performDrawHeaders(docSim, stateSim);
+              }
+              this._performDrawRow(docSim, record, stateSim);
+            }
+          }
+        }
+      });
+      rawStreamSim.on('end', res);
+    });
+    const doc = new PDFDocument({ autoFirstPage: true, margin: 50, size: 'A4' }); doc.pipe(fs.createWriteStream(this.outputFileName));
+    doc.addNamedDestination('TOC_TOP'); doc.outline.addItem('Table of Contents');
+    doc.fontSize(28).font('Helvetica-Bold').text(this.reportTitle, { align: 'center' }); doc.moveDown(2);
+    doc.fontSize(16).fillColor(this.layout.secondaryColor).text('Navigation Links:', { underline: true }); doc.moveDown(1);
+    reportMap.forEach((entry) => {
+      const anchor = entry.title.replace(/\s+/g, '_'); const rangeText = `${entry.startPage}-${entry.endPage}`;
+      const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+      doc.fontSize(12).font('Helvetica').fillColor(this.layout.themeColor); doc.text(entry.title, { continued: true, underline: true, goTo: anchor });
+      const rangeWidth = doc.widthOfString(` ${rangeText}`); const remainingWidth = (pageWidth - doc.widthOfString(entry.title) - rangeWidth) - 10;
+      if (remainingWidth > 0) { const docDots = " . ".repeat(Math.floor(remainingWidth / doc.widthOfString(" . "))); doc.fillColor(this.layout.dotColor).text(` ${docDots} `, { continued: true, underline: false }); } else { doc.text(" ", { continued: true }); }
+      doc.fillColor(this.layout.secondaryColor).text(rangeText, { underline: false }); doc.moveDown(0.5);
+    });
+    const state = { isReal: true, pageNum: 2, currentTitle: '', activeTitleOnPage: '', lastLinkedTitle: '', headers: [], columnWidths: [], currentColumns: [], dynamicFontSize: 10, docLayout: 'portrait', tableStartX: 30, fullTableWidth: 0, tableStartY: 0, currentGroupItemsProcessed: 0 };
+    const rawStream = chain([getStream(this.source), parser()]);
+    let counter = 0, isIdKey = false, inColsIdx = false, inItmsIdx = false, depthIdx = 0, objAssIdx = null;
+    rawStream.on('data', token => {
+      if (!inColsIdx && !inItmsIdx) { if (token.name === 'keyValue' && token.value === 'title') { isIdKey = true; return; } if (isIdKey && token.name === 'stringValue') { state.currentTitle = token.value; isIdKey = false; return; } }
+      if (token.name === 'keyValue' && token.value === 'columns') { inColsIdx = true; objAssIdx = new Assembler(); return; }
+      if (inColsIdx) { objAssIdx.consume(token); if (objAssIdx.done) { state.currentColumns = objAssIdx.current; objAssIdx = null; inColsIdx = false; } return; }
+      if (token.name === 'keyValue' && token.value === 'items') { inItmsIdx = true; depthIdx = 0; return; }
+      if (inItmsIdx) {
+        if (token.name === 'startArray') { depthIdx++; if (depthIdx === 1) return; }
+        if (token.name === 'endArray') { depthIdx--; if (depthIdx === 0) { inItmsIdx = false; if (state.currentGroupItemsProcessed > 0) { doc.lineWidth(1.5).strokeColor('#000000').roundedRect(state.tableStartX, state.tableStartY, state.fullTableWidth, (doc.y - state.tableStartY) + this.layout.tablePadding, 8).stroke(); this._performDrawFooter(doc, state); } state.currentGroupItemsProcessed = 0; return; } }
+        if (depthIdx === 1 && token.name === 'startObject') { objAssIdx = new Assembler(); objAssIdx.consume(token); }
+        else if (objAssIdx) {
+          objAssIdx.consume(token);
+          if (objAssIdx.done) {
+            const record = objAssIdx.current; objAssIdx = null;
+            if (!state.currentGroupItemsProcessed) {
+              const keys = Object.keys(record); state.headers = keys.map((k, i) => { const col = (state.currentColumns && state.currentColumns[i]) ? state.currentColumns[i] : {}; return { title: col.title || k.replace(/_/g, ' ').toUpperCase(), type: col.type || 'text' }; });
+              state.docLayout = state.headers.length > 7 ? 'landscape' : 'portrait'; state.dynamicFontSize = state.headers.length > 12 ? 6 : 10;
+              if (counter > 0) state.pageNum++; doc.addPage({ margins: this.layout.margins, size: 'A4', layout: state.docLayout });
+              state.fullTableWidth = doc.page.width - this.layout.margins.left - this.layout.margins.right; state.tableStartX = this.layout.margins.left;
+              state.columnWidths = state.headers.map(() => (state.fullTableWidth - (this.layout.tablePadding * 2)) / state.headers.length);
+              state.activeTitleOnPage = ''; this._performDrawHeaders(doc, state);
+            }
+            this._performDrawRow(doc, record, state); state.currentGroupItemsProcessed++; counter++;
+            if (counter % 1000 === 0) console.log(`Processed ${counter} records (PDF)...`);
+          }
+        }
+      }
+    });
+    return new Promise((res) => rawStream.on('end', () => { doc.end(); res(); }));
+  }
+}
+
+module.exports = StreamingPdfGenerator;

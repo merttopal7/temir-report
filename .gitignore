@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Reports (Generated output)
+*.html
+*.pdf
+*.xlsx
+report/
+output/
+
+# Data & Assets
+data.json
+temp/
+tmp/
+.cache/
+
+# Image processing specific
+*.webp
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Debugging
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+*.log

@@ -1,0 +1,20 @@
+{
+  "name": "temir-report",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "pdfkit": "^0.18.0",
+    "sharp": "^0.34.5",
+    "stream-chain": "^3.6.1",
+    "stream-json": "^2.1.0"
+  }
+}
