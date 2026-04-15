@@ -9,14 +9,17 @@ const HELP = `
 Usage: temir-report generate [options]
 
 Options:
-  --source,  -s  <path>    Path to JSON data source file (required)
-  --output,  -o  <path>    Output file path            (required)
-  --type,    -t  <format>  Report format: pdf | excel | html  (default: pdf)
-  --title,   -T  <string>  Report title                (default: "Report")
-  --help,    -h            Show this help message
+  --source,    -s  <path>    Path to JSON data source file (required)
+  --output,    -o  <path>    Output file path              (required)
+  --type,      -t  <format>  Report format: pdf | excel | html  (default: pdf)
+  --title,     -T  <string>  Report title                 (default: "Report")
+  --skip-toc,  -S            PDF only: skip the Table of Contents dry-run pass.
+                             ~2x faster for large datasets. No TOC page is generated.
+  --help,      -h            Show this help message
 
 Examples:
   temir-report generate -s data.json -t pdf    -o report.pdf  -T "Sales Report"
+  temir-report generate -s data.json -t pdf    -o report.pdf  --skip-toc
   temir-report generate -s data.json -t excel  -o report.xlsx
   temir-report generate -s data.json -t html   -o report.html -T "Dashboard"
 `;
@@ -27,11 +30,12 @@ function parseArgs(argv) {
     const key = argv[i];
     const val = argv[i + 1];
     switch (key) {
-      case '--source':  case '-s': args.source = val; i++; break;
-      case '--output':  case '-o': args.output = val; i++; break;
-      case '--type':    case '-t': args.type   = val; i++; break;
-      case '--title':   case '-T': args.title  = val; i++; break;
-      case '--help':    case '-h': args.help   = true; break;
+      case '--source':   case '-s': args.source  = val; i++; break;
+      case '--output':   case '-o': args.output  = val; i++; break;
+      case '--type':     case '-t': args.type    = val; i++; break;
+      case '--title':    case '-T': args.title   = val; i++; break;
+      case '--skip-toc': case '-S': args.skipToc = true; break;
+      case '--help':     case '-h': args.help    = true; break;
     }
   }
   return args;
@@ -67,14 +71,19 @@ function parseArgs(argv) {
   const outputPath = path.resolve(process.cwd(), args.output);
   const title = args.title || 'Report';
 
+  const options = {};
+  if (args.skipToc) options.skipToc = true;
+
   console.log(`\n📊 temir-report`);
-  console.log(`   Source : ${sourcePath}`);
-  console.log(`   Format : ${type.toUpperCase()}`);
-  console.log(`   Output : ${outputPath}`);
-  console.log(`   Title  : ${title}\n`);
+  console.log(`   Source  : ${sourcePath}`);
+  console.log(`   Format  : ${type.toUpperCase()}`);
+  console.log(`   Output  : ${outputPath}`);
+  console.log(`   Title   : ${title}`);
+  if (args.skipToc) console.log(`   TOC     : skipped (single-pass mode)`);
+  console.log();
 
   try {
-    await new ReportGenerator()
+    await new ReportGenerator(null, options)
       .source(sourcePath)
       .setTitle(title)
       .type(type)

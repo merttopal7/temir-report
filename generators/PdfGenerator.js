@@ -151,31 +151,114 @@ class StreamingPdfGenerator {
     doc.page.margins.bottom = bm; doc.fillColor('black');
   }
 
-  /**
-   * Executes the full 2-pass PDF generation pipeline and writes the output file.
+   /**
+   * Executes the PDF generation pipeline and writes the output file.
    *
-   * **Pass 1 — Structure analysis (dry run):**
-   * Creates an in-memory `PDFDocument` that is never piped to disk. Streams the
-   * JSON source and simulates `_performDrawHeaders` / `_performDrawRow` to compute
-   * exact page spans. The result is stored in `reportMap` as an array of
-   * `{ title, startPage, endPage }` entries.
+   * **Default (2-pass with TOC):**
+   * - Pass 1 (dry run): Reads all records, simulates layout, builds `reportMap`
+   *   with exact page spans. Logs progress every 25,000 records so the terminal
+   *   does not appear frozen during large dataset analysis.
+   * - Pass 2 (real render): Renders the cover page (title + clickable TOC from
+   *   `reportMap`), then streams all records again and writes every page to disk.
    *
-   * **Pass 2 — Real render:**
-   * Creates the final `PDFDocument` piped to `this.outputFileName`. Renders:
-   *   - Cover page: report title + clickable TOC built from `reportMap`,
-   *     with dot-leader lines and `goTo` hyperlinks.
-   *   - Content pages: groups rendered one record at a time, with page breaks,
-   *     re-drawn column headers, and PDF bookmark entries.
+   * **`skipToc: true` (single-pass, no TOC):**
+   * Pass 1 is skipped entirely. The PDF starts directly with the data pages — no
+   * cover page, no Table of Contents, no "Go To TOC" footer links. Roughly 2×
+   * faster than the default mode, and the recommended setting for datasets with
+   * millions of rows where TOC generation would take an impractical amount of time.
+   *
+   * Enable via the options object:
+   * ```js
+   * new ReportGenerator('data.json', { skipToc: true }).type('pdf').generate('out.pdf');
+   * ```
    *
    * @returns {Promise<void>} Resolves when `doc.end()` has been called and the
    *   write stream has finished flushing all bytes to disk.
    * @throws {Error} If the JSON stream emits an error during either pass.
    */
   async generate() {
-    console.log(`Analyzing PDF structure...`);
+    if (this.layout.skipToc) {
+      return this._generateSinglePass();
+    }
+    return this._generateTwoPass();
+  }
+
+  /**
+   * Single-pass PDF generation — no TOC, no dry run.
+   * Streams JSON once and writes pages directly to disk.
+   * @private
+   * @returns {Promise<void>}
+   */
+  async _generateSinglePass() {
+    console.log(`Starting PDF generation (single-pass, TOC skipped)...`);
+    const doc = new PDFDocument({ autoFirstPage: false, size: 'A4' });
+    doc.pipe(fs.createWriteStream(this.outputFileName));
+    const state = {
+      isReal: true, pageNum: 1, currentTitle: '', activeTitleOnPage: '', lastLinkedTitle: '',
+      headers: [], columnWidths: [], currentColumns: [], dynamicFontSize: 10,
+      docLayout: 'portrait', tableStartX: 30, fullTableWidth: 0, tableStartY: 0,
+      currentGroupItemsProcessed: 0
+    };
+    const rawStream = chain([getStream(this.source), parser()]);
+    let counter = 0, isIdKey = false, inColsIdx = false, inItmsIdx = false, depthIdx = 0, objAssIdx = null;
+    rawStream.on('data', token => {
+      if (!inColsIdx && !inItmsIdx) {
+        if (token.name === 'keyValue' && token.value === 'title') { isIdKey = true; return; }
+        if (isIdKey && token.name === 'stringValue') { state.currentTitle = token.value; isIdKey = false; return; }
+      }
+      if (token.name === 'keyValue' && token.value === 'columns') { inColsIdx = true; objAssIdx = new Assembler(); return; }
+      if (inColsIdx) { objAssIdx.consume(token); if (objAssIdx.done) { state.currentColumns = objAssIdx.current; objAssIdx = null; inColsIdx = false; } return; }
+      if (token.name === 'keyValue' && token.value === 'items') { inItmsIdx = true; depthIdx = 0; return; }
+      if (inItmsIdx) {
+        if (token.name === 'startArray') { depthIdx++; if (depthIdx === 1) return; }
+        if (token.name === 'endArray') {
+          depthIdx--;
+          if (depthIdx === 0) {
+            inItmsIdx = false;
+            if (state.currentGroupItemsProcessed > 0) {
+              doc.lineWidth(1.5).strokeColor('#000000').roundedRect(state.tableStartX, state.tableStartY, state.fullTableWidth, (doc.y - state.tableStartY) + this.layout.tablePadding, 8).stroke();
+              this._performDrawFooter(doc, state);
+            }
+            state.currentGroupItemsProcessed = 0; return;
+          }
+        }
+        if (depthIdx === 1 && token.name === 'startObject') { objAssIdx = new Assembler(); objAssIdx.consume(token); }
+        else if (objAssIdx) {
+          objAssIdx.consume(token);
+          if (objAssIdx.done) {
+            const record = objAssIdx.current; objAssIdx = null;
+            if (!state.currentGroupItemsProcessed) {
+              const keys = Object.keys(record);
+              state.headers = keys.map((k, i) => { const col = (state.currentColumns && state.currentColumns[i]) ? state.currentColumns[i] : {}; return { title: col.title || k.replace(/_/g, ' ').toUpperCase(), type: col.type || 'text' }; });
+              state.docLayout = state.headers.length > 7 ? 'landscape' : 'portrait';
+              state.dynamicFontSize = state.headers.length > 12 ? 6 : 10;
+              state.pageNum++;
+              doc.addPage({ margins: this.layout.margins, size: 'A4', layout: state.docLayout });
+              state.fullTableWidth = doc.page.width - this.layout.margins.left - this.layout.margins.right;
+              state.tableStartX = this.layout.margins.left;
+              state.columnWidths = state.headers.map(() => (state.fullTableWidth - (this.layout.tablePadding * 2)) / state.headers.length);
+              state.activeTitleOnPage = ''; this._performDrawHeaders(doc, state);
+            }
+            this._performDrawRow(doc, record, state); state.currentGroupItemsProcessed++; counter++;
+            if (counter % 25000 === 0) console.log(`Processed ${counter} records (PDF single-pass)...`);
+          }
+        }
+      }
+    });
+    return new Promise((res) => rawStream.on('end', () => { doc.end(); res(); }));
+  }
+
+  /**
+   * Two-pass PDF generation — dry run to build TOC, then real render.
+   * @private
+   * @returns {Promise<void>}
+   */
+  async _generateTwoPass() {
+    console.log(`Analyzing PDF structure (pass 1 of 2)...`);
     const docSim = new PDFDocument({ margin: 30, size: 'A4' });
     const rawStreamSim = chain([getStream(this.source), parser()]);
     let reportMap = [], currentEntry = null, isTitleKey = false, inColumnsArray = false, inItemsArray = false, arrayDepth = 0, objAssembler = null;
+    let dryRunCounter = 0;
     let stateSim = {
       isReal: false, pageNum: 2, currentTitle: '', activeTitleOnPage: '', lastLinkedTitle: '',
       headers: [], columnWidths: [], currentColumns: [], dynamicFontSize: 10, docLayout: 'portrait', tableStartX: 30, fullTableWidth: 0
@@ -208,12 +291,15 @@ class StreamingPdfGenerator {
                 stateSim.activeTitleOnPage = ''; this._performDrawHeaders(docSim, stateSim);
               }
               this._performDrawRow(docSim, record, stateSim);
+              dryRunCounter++;
+              if (dryRunCounter % 25000 === 0) console.log(`  Analyzing... ${dryRunCounter.toLocaleString()} records scanned (pass 1 of 2)`);
             }
           }
         }
       });
       rawStreamSim.on('end', res);
     });
+    console.log(`  Analysis complete — ${dryRunCounter.toLocaleString()} total records, ${reportMap.length} group(s) found.`);
     const doc = new PDFDocument({ autoFirstPage: true, margin: 50, size: 'A4' }); doc.pipe(fs.createWriteStream(this.outputFileName));
     doc.addNamedDestination('TOC_TOP'); doc.outline.addItem('Table of Contents');
     doc.fontSize(28).font('Helvetica-Bold').text(this.reportTitle, { align: 'center' }); doc.moveDown(2);
@@ -251,12 +337,12 @@ class StreamingPdfGenerator {
               state.activeTitleOnPage = ''; this._performDrawHeaders(doc, state);
             }
             this._performDrawRow(doc, record, state); state.currentGroupItemsProcessed++; counter++;
-            if (counter % 1000 === 0) console.log(`Processed ${counter} records (PDF)...`);
+            if (counter % 25000 === 0) console.log(`  Rendering... ${counter.toLocaleString()} records written (pass 2 of 2)...`);
           }
         }
       }
     });
-    return new Promise((res) => rawStream.on('end', () => { doc.end(); res(); }));
+    return new Promise((res) => rawStream.on('end', () => { doc.end(); console.log(`  Render complete — ${counter.toLocaleString()} records written.`); res(); }));
   }
 }
 

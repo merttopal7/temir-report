@@ -39,54 +39,54 @@ const sharp = USE_SHARP ? require('sharp') : null;
  * `textContent` before calling `JSON.parse()`.
  */
 class StreamingHtmlGenerator {
-  /**
-   * @param {string} source          - File path or serialized JSON string (see `utils/StreamUtils.getStream`).
-   * @param {string} outputFileName  - Destination `.html` file path.
-   * @param {object} [options={}]    - Generator options.
-   * @param {string} [options.reportTitle='Streaming Report']
-   *   Title shown in the browser tab (`<title>`) and top-navigation `<h1>`.
-   */
-  constructor(source, outputFileName, options = {}) {
-    this.source = source;
-    this.outputFileName = outputFileName;
-    this.reportTitle = options.reportTitle || 'Streaming Report';
-    /** @type {Map<string, string|null>} Maps absolute image file paths to their assigned CSS class name. */
-    this.imageCache = new Map();
-    /** @type {number} Monotonically increasing counter used to generate unique CSS class names. */
-    this.imageOrderId = 0;
-  }
+    /**
+     * @param {string} source          - File path or serialized JSON string (see `utils/StreamUtils.getStream`).
+     * @param {string} outputFileName  - Destination `.html` file path.
+     * @param {object} [options={}]    - Generator options.
+     * @param {string} [options.reportTitle='Streaming Report']
+     *   Title shown in the browser tab (`<title>`) and top-navigation `<h1>`.
+     */
+    constructor(source, outputFileName, options = {}) {
+        this.source = source;
+        this.outputFileName = outputFileName;
+        this.reportTitle = options.reportTitle || 'Streaming Report';
+        /** @type {Map<string, string|null>} Maps absolute image file paths to their assigned CSS class name. */
+        this.imageCache = new Map();
+        /** @type {number} Monotonically increasing counter used to generate unique CSS class names. */
+        this.imageOrderId = 0;
+    }
 
-  /**
-   * Runs the streaming HTML generation pipeline and writes the output file.
-   *
-   * **Server-side pipeline (generation time):**
-   * 1. Opens a `WriteStream` to `this.outputFileName`.
-   * 2. Writes the HTML shell: `<!DOCTYPE html>`, `<head>` with all CSS, and
-   *    the static `<aside>` sidebar and `<header>` markup.
-   * 3. Streams the JSON source token-by-token via `stream-json` + `stream-chain`.
-   *    For each group:
-   *    - On the first record: writes the `<section>`, table headers, and opens
-   *      a `<script type="application/json">` data store tag.
-   *    - For every record: serialises the row as a JSON array element. Image
-   *      columns are compressed (or read raw) and injected as CSS classes using
-   *      the script-splitting technique; cell values are replaced with
-   *      `{ isImg: true, className: 'img-asset-N' }` descriptors.
-   *    - On group end: closes the `</script></section>` block.
-   * 4. Writes the client-side `<script>` bootstrap (virtual grid engine, search,
-   *    pagination, theme/sidebar persistence) and closes `</body></html>`.
-   *
-   * **Back-pressure:** The stream is paused before any async `sharp` call and
-   * resumed immediately after, preventing out-of-order writes.
-   *
-   * @returns {Promise<void>} Resolves when `out.end()` has been called and all
-   *   bytes have been written to disk.
-   * @throws {Error} If the JSON stream emits an error or an image read fails
-   *   outside of the per-cell try/catch guard.
-   */
-  async generate() {
-    console.log("Starting Streaming HTML generation with Nav & Page Control...");
-    const out = fs.createWriteStream(this.outputFileName);
-    out.write(`<!DOCTYPE html>
+    /**
+     * Runs the streaming HTML generation pipeline and writes the output file.
+     *
+     * **Server-side pipeline (generation time):**
+     * 1. Opens a `WriteStream` to `this.outputFileName`.
+     * 2. Writes the HTML shell: `<!DOCTYPE html>`, `<head>` with all CSS, and
+     *    the static `<aside>` sidebar and `<header>` markup.
+     * 3. Streams the JSON source token-by-token via `stream-json` + `stream-chain`.
+     *    For each group:
+     *    - On the first record: writes the `<section>`, table headers, and opens
+     *      a `<script type="application/json">` data store tag.
+     *    - For every record: serialises the row as a JSON array element. Image
+     *      columns are compressed (or read raw) and injected as CSS classes using
+     *      the script-splitting technique; cell values are replaced with
+     *      `{ isImg: true, className: 'img-asset-N' }` descriptors.
+     *    - On group end: closes the `</script></section>` block.
+     * 4. Writes the client-side `<script>` bootstrap (virtual grid engine, search,
+     *    pagination, theme/sidebar persistence) and closes `</body></html>`.
+     *
+     * **Back-pressure:** The stream is paused before any async `sharp` call and
+     * resumed immediately after, preventing out-of-order writes.
+     *
+     * @returns {Promise<void>} Resolves when `out.end()` has been called and all
+     *   bytes have been written to disk.
+     * @throws {Error} If the JSON stream emits an error or an image read fails
+     *   outside of the per-cell try/catch guard.
+     */
+    async generate() {
+        console.log("Starting Streaming HTML generation with Nav & Page Control...");
+        const out = fs.createWriteStream(this.outputFileName);
+        out.write(`<!DOCTYPE html>
 <html>
 <head>
     <title>${this.reportTitle}</title>
@@ -186,6 +186,7 @@ class StreamingHtmlGenerator {
         
         /* Pagination Bar */
         .pagination-bar { padding: 16px 24px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--card); }
+        .pagination-left { display: flex; align-items: center; }
         .page-btn { padding: 8px 14px; border: 1px solid var(--border); background: var(--card); border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600; color: var(--text); transition: all 0.2s; display: flex; align-items: center; gap: 6px; }
         .page-btn:hover:not(:disabled) { border-color: var(--primary); background: var(--hover-bg); }
         .page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
@@ -249,40 +250,40 @@ class StreamingHtmlGenerator {
         <div class="content-body" id="main-content">
 `);
 
-    const rawStream = chain([getStream(this.source), parser()]);
-    let isTitleKey = false, inColumnsArr = false, inItemsArr = false, arrayDepth = 0, objAss = null;
-    let currentColumns = [], currentGroupTitle = 'Group', counter = 0, currentGroupItemsProcessed = 0;
+        const rawStream = chain([getStream(this.source), parser()]);
+        let isTitleKey = false, inColumnsArr = false, inItemsArr = false, arrayDepth = 0, objAss = null;
+        let currentColumns = [], currentGroupTitle = 'Group', counter = 0, currentGroupItemsProcessed = 0;
 
-    await new Promise((resolve, reject) => {
-      rawStream.on('data', async token => {
-        try {
-          if (!inColumnsArr && !inItemsArr) {
-            if (token.name === 'keyValue' && token.value === 'title') { isTitleKey = true; return; }
-            if (isTitleKey && token.name === 'stringValue') { currentGroupTitle = token.value; isTitleKey = false; return; }
-          }
-          if (token.name === 'keyValue' && token.value === 'columns') { inColumnsArr = true; objAss = new Assembler(); return; }
-          if (inColumnsArr) { objAss.consume(token); if (objAss.done) { currentColumns = objAss.current; objAss = null; inColumnsArr = false; } return; }
-          if (token.name === 'keyValue' && token.value === 'items') { inItemsArr = true; arrayDepth = 0; return; }
-          
-          if (inItemsArr) {
-            if (token.name === 'startArray') { arrayDepth++; if (arrayDepth === 1) return; }
-            if (token.name === 'endArray') {
-              arrayDepth--;
-              if (arrayDepth === 0) {
-                inItemsArr = false;
-                out.write(`]</script></section>`);
-                currentGroupItemsProcessed = 0; return;
-              }
-            }
-            if (arrayDepth === 1 && token.name === 'startObject') { objAss = new Assembler(); objAss.consume(token); }
-            else if (objAss) {
-              objAss.consume(token);
-              if (objAss.done) {
-                rawStream.pause();
-                const record = objAss.current; objAss = null;
-                if (currentGroupItemsProcessed === 0) {
-                  const keys = Object.keys(record);
-                  out.write(`
+        await new Promise((resolve, reject) => {
+            rawStream.on('data', async token => {
+                try {
+                    if (!inColumnsArr && !inItemsArr) {
+                        if (token.name === 'keyValue' && token.value === 'title') { isTitleKey = true; return; }
+                        if (isTitleKey && token.name === 'stringValue') { currentGroupTitle = token.value; isTitleKey = false; return; }
+                    }
+                    if (token.name === 'keyValue' && token.value === 'columns') { inColumnsArr = true; objAss = new Assembler(); return; }
+                    if (inColumnsArr) { objAss.consume(token); if (objAss.done) { currentColumns = objAss.current; objAss = null; inColumnsArr = false; } return; }
+                    if (token.name === 'keyValue' && token.value === 'items') { inItemsArr = true; arrayDepth = 0; return; }
+
+                    if (inItemsArr) {
+                        if (token.name === 'startArray') { arrayDepth++; if (arrayDepth === 1) return; }
+                        if (token.name === 'endArray') {
+                            arrayDepth--;
+                            if (arrayDepth === 0) {
+                                inItemsArr = false;
+                                out.write(`]</script></section>`);
+                                currentGroupItemsProcessed = 0; return;
+                            }
+                        }
+                        if (arrayDepth === 1 && token.name === 'startObject') { objAss = new Assembler(); objAss.consume(token); }
+                        else if (objAss) {
+                            objAss.consume(token);
+                            if (objAss.done) {
+                                rawStream.pause();
+                                const record = objAss.current; objAss = null;
+                                if (currentGroupItemsProcessed === 0) {
+                                    const keys = Object.keys(record);
+                                    out.write(`
 <section id="${currentGroupTitle.replace(/\s+/g, '_')}" class="report-group" data-title="${currentGroupTitle}">
     <div class="group-header">
         <h2 class="section-title">${currentGroupTitle} <span class="record-count">Loading...</span></h2>
@@ -294,77 +295,77 @@ class StreamingHtmlGenerator {
     <div class="table-container">
         <table>
             <thead><tr>`);
-                  keys.forEach((k, i) => {
-                    const col = (currentColumns && currentColumns[i]) ? currentColumns[i] : {};
-                    out.write(`<th>${col.title || k.replace(/_/g, ' ').toUpperCase()}</th>`);
-                  });
-                  out.write(`</tr></thead><tbody></tbody></table></div>
+                                    keys.forEach((k, i) => {
+                                        const col = (currentColumns && currentColumns[i]) ? currentColumns[i] : {};
+                                        out.write(`<th>${col.title || k.replace(/_/g, ' ').toUpperCase()}</th>`);
+                                    });
+                                    out.write(`</tr></thead><tbody></tbody></table></div>
       <div class="pagination-bar"></div>
       <script class="group-data-store" type="application/json">[`);
-                }
-                
-                const rowData = [];
-                const entries = Object.entries(record);
-                for (let idx = 0; idx < entries.length; idx++) {
-                  const [key, value] = entries[idx];
-                  const colInfo = currentColumns[idx] || {};
-                  if (colInfo.type === 'image' && value && fs.existsSync(value)) {
-                      if (!this.imageCache.has(value)) {
-                        this.imageOrderId++;
-                        const imgClass = `img-asset-${this.imageOrderId}`;
-                        
-                        if (USE_SHARP) {
-                          // --- sharp path: resize + convert to WebP ---
-                          try {
-                            const compressed = await sharp(value)
-                              .resize(300, 300, { fit: 'inside', withoutEnlargement: true })
-                              .webp({ quality: 80 })
-                              .toBuffer();
-                            const b64 = compressed.toString('base64');
-                            out.write(`</script><style>.${imgClass} { content: url("data:image/webp;base64,${b64}"); }</style><script class="group-data-store" type="application/json">`);
-                            this.imageCache.set(value, imgClass);
-                          } catch (sErr) {
-                            const b64Raw = fs.readFileSync(value).toString('base64');
-                            const ext = value.split('.').pop();
-                            out.write(`</script><style>.${imgClass} { content: url("data:image/${ext};base64,${b64Raw}"); }</style><script class="group-data-store" type="application/json">`);
-                            this.imageCache.set(value, imgClass);
-                          }
-                        } else {
-                          // --- no-sharp path: embed raw file bytes ---
-                          try {
-                            const b64Raw = fs.readFileSync(value).toString('base64');
-                            const ext = value.split('.').pop().toLowerCase();
-                            out.write(`</script><style>.${imgClass} { content: url("data:image/${ext};base64,${b64Raw}"); }</style><script class="group-data-store" type="application/json">`);
-                            this.imageCache.set(value, imgClass);
-                          } catch (readErr) {
-                            // file unreadable — skip image embedding for this path
-                            this.imageCache.set(value, null);
-                          }
-                        }
-                      }
-                      const registeredClass = this.imageCache.get(value);
-                      rowData.push({ isImg: true, className: registeredClass });
-                  } else {
-                      rowData.push(value ?? '');
-                  }
-                }
-                
-                out.write((currentGroupItemsProcessed > 0 ? ',' : '') + JSON.stringify(rowData));
-  
-                currentGroupItemsProcessed++; counter++;
-                if (counter % 1000 === 0) console.log(`Processed ${counter} records (HTML)...`);
-                rawStream.resume();
-              }
-            }
-          }
-        } catch (err) { reject(err); }
-      });
-      rawStream.on('end', resolve);
-      rawStream.on('error', reject);
-    });
+                                }
 
-    // Write Final Script with Virtual Rendering & Persistence
-    out.write(`</script>
+                                const rowData = [];
+                                const entries = Object.entries(record);
+                                for (let idx = 0; idx < entries.length; idx++) {
+                                    const [key, value] = entries[idx];
+                                    const colInfo = currentColumns[idx] || {};
+                                    if (colInfo.type === 'image' && value && fs.existsSync(value)) {
+                                        if (!this.imageCache.has(value)) {
+                                            this.imageOrderId++;
+                                            const imgClass = `img-asset-${this.imageOrderId}`;
+
+                                            if (USE_SHARP) {
+                                                // --- sharp path: resize + convert to WebP ---
+                                                try {
+                                                    const compressed = await sharp(value)
+                                                        .resize(300, 300, { fit: 'inside', withoutEnlargement: true })
+                                                        .webp({ quality: 80 })
+                                                        .toBuffer();
+                                                    const b64 = compressed.toString('base64');
+                                                    out.write(`</script><style>.${imgClass} { content: url("data:image/webp;base64,${b64}"); }</style><script class="group-data-store" type="application/json">`);
+                                                    this.imageCache.set(value, imgClass);
+                                                } catch (sErr) {
+                                                    const b64Raw = fs.readFileSync(value).toString('base64');
+                                                    const ext = value.split('.').pop();
+                                                    out.write(`</script><style>.${imgClass} { content: url("data:image/${ext};base64,${b64Raw}"); }</style><script class="group-data-store" type="application/json">`);
+                                                    this.imageCache.set(value, imgClass);
+                                                }
+                                            } else {
+                                                // --- no-sharp path: embed raw file bytes ---
+                                                try {
+                                                    const b64Raw = fs.readFileSync(value).toString('base64');
+                                                    const ext = value.split('.').pop().toLowerCase();
+                                                    out.write(`</script><style>.${imgClass} { content: url("data:image/${ext};base64,${b64Raw}"); }</style><script class="group-data-store" type="application/json">`);
+                                                    this.imageCache.set(value, imgClass);
+                                                } catch (readErr) {
+                                                    // file unreadable — skip image embedding for this path
+                                                    this.imageCache.set(value, null);
+                                                }
+                                            }
+                                        }
+                                        const registeredClass = this.imageCache.get(value);
+                                        rowData.push({ isImg: true, className: registeredClass });
+                                    } else {
+                                        rowData.push(value ?? '');
+                                    }
+                                }
+
+                                out.write((currentGroupItemsProcessed > 0 ? ',' : '') + JSON.stringify(rowData));
+
+                                currentGroupItemsProcessed++; counter++;
+                                if (counter % 1000 === 0) console.log(`Processed ${counter} records (HTML)...`);
+                                rawStream.resume();
+                            }
+                        }
+                    }
+                } catch (err) { reject(err); }
+            });
+            rawStream.on('end', resolve);
+            rawStream.on('error', reject);
+        });
+
+        // Write Final Script with Virtual Rendering & Persistence
+        out.write(`</script>
     </div>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
@@ -528,9 +529,9 @@ class StreamingHtmlGenerator {
     </script>
 </body>
 </html>`);
-    out.end();
-    console.log(`HTML dashboard (Premium UI v2.5) saved to ${this.outputFileName}`);
-  }
+        out.end();
+        console.log(`HTML dashboard (Premium UI v2.5) saved to ${this.outputFileName}`);
+    }
 }
 
 module.exports = StreamingHtmlGenerator;

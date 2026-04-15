@@ -1,6 +1,6 @@
 {
   "name": "temir-report",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "High-performance streaming report generator for PDF, Excel and HTML from massive JSON datasets",
   "main": "index.js",
   "bin": {
