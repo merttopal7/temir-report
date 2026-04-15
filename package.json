@@ -1,15 +1,44 @@
 {
   "name": "temir-report",
   "version": "1.0.0",
-  "description": "",
+  "description": "High-performance streaming report generator for PDF, Excel and HTML from massive JSON datasets",
   "main": "index.js",
+  "bin": {
+    "temir-report": "./bin/cli.js"
+  },
+  "files": [
+    "index.js",
+    "generators/",
+    "utils/",
+    "bin/",
+    "README.md"
+  ],
   "scripts": {
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": [
+    "report",
+    "pdf",
+    "excel",
+    "xlsx",
+    "html",
+    "streaming",
+    "generator",
+    "pdfkit",
+    "exceljs",
+    "large-data"
+  ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
   "dependencies": {
     "exceljs": "^4.4.0",
     "pdfkit": "^0.18.0",
@@ -18,3 +47,4 @@
     "stream-json": "^2.1.0"
   }
 }
+

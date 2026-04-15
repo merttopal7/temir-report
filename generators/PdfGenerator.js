@@ -5,7 +5,29 @@ const { parser } = require('stream-json');
 const Assembler = require('stream-json/assembler.js');
 const { getStream, layoutConfig } = require('../utils/StreamUtils');
 
+/**
+ * Generates a professional, multi-page PDF report from a streaming JSON source.
+ *
+ * Uses a **2-pass architecture** to produce a clickable Table of Contents:
+ * - **Pass 1 (dry run):** Simulates the full layout without writing pixel data,
+ *   recording the exact page range (`startPage`–`endPage`) for each group.
+ *   This produces `reportMap`, which drives the TOC on page 1.
+ * - **Pass 2 (real render):** Streams the JSON again, renders all content to disk,
+ *   and uses `reportMap` to build the clickable TOC with correct page numbers.
+ *
+ * Layout automatically adapts to the number of columns:
+ * - ≤ 7 columns → Portrait A4
+ * - > 7 columns → Landscape A4
+ * - > 12 columns → Font size reduced to 6 pt to prevent overflow
+ */
 class StreamingPdfGenerator {
+  /**
+   * @param {string} source       - File path or serialized JSON string (see `utils/StreamUtils.getStream`).
+   * @param {string} outputFileName - Destination `.pdf` file path.
+   * @param {object} options      - Layout overrides merged on top of `layoutConfig`.
+   *   Any property defined in `layoutConfig` can be overridden here.
+   *   `options.reportTitle` sets the cover-page heading.
+   */
   constructor(source, outputFileName, options) {
     this.source = source;
     this.outputFileName = outputFileName;
@@ -13,6 +35,27 @@ class StreamingPdfGenerator {
     this.reportTitle = options.reportTitle || "Report";
   }
 
+  /**
+   * Writes the group title heading and bold column header row to the document.
+   *
+   * Records `state.tableStartY` so that `_performDrawRow` can later close the
+   * rounded-rect table border at the correct Y position. Also registers a named
+   * PDF destination (`doc.addNamedDestination`) and bookmark entry the first time
+   * a group title is drawn — enabling TOC hyperlinks and the Acrobat bookmarks panel.
+   *
+   * @param {import('pdfkit')} doc  - Active PDFKit document instance.
+   * @param {object}           state - Shared mutable render state for the current pass.
+   * @param {boolean} state.isReal          - `false` during the dry-run pass (no pixel output).
+   * @param {string}  state.currentTitle    - Display name of the current data group.
+   * @param {string}  state.activeTitleOnPage - Title already printed on the current page (prevents duplicates).
+   * @param {string}  state.lastLinkedTitle  - Title for which a named destination was last registered.
+   * @param {number}  state.pageNum          - Current logical page number.
+   * @param {Array<{title:string,type:string}>} state.headers - Column descriptor array.
+   * @param {number[]} state.columnWidths   - Computed width (pt) for each column.
+   * @param {number}  state.tableStartX     - Left X coordinate of the table (= left margin).
+   * @param {number}  state.dynamicFontSize - Font size (pt) for data cells (6 or 10).
+   * @returns {void}
+   */
   _performDrawHeaders(doc, state) {
     state.tableStartY = doc.y; doc.y += this.layout.tablePadding;
     if (state.currentTitle && state.activeTitleOnPage !== state.currentTitle) {
@@ -32,6 +75,26 @@ class StreamingPdfGenerator {
     doc.y += (this.layout.tablePadding / 2); doc.font('Helvetica');
   }
 
+  /**
+   * Writes a single data record as a table row.
+   *
+   * Before rendering, pre-calculates the row's maximum height (accounting for
+   * multi-line text and fixed image cells). If the row would overflow the page
+   * bottom margin, it:
+   *   1. Closes the current table border with a rounded rect.
+   *   2. Draws the page footer and increments `state.pageNum`.
+   *   3. Calls `doc.addPage()` and re-draws column headers on the new page.
+   *
+   * Image cells (`type === 'image'`) are rendered with `doc.image()` using a
+   * fixed `fit` box of `[columnWidth - 5, layout.imageHeight]`. All other cells
+   * are rendered as plain text with `doc.text()`.
+   *
+   * @param {import('pdfkit')} doc    - Active PDFKit document instance.
+   * @param {object}           record - Plain object representing one data record.
+   *   Values are read positionally via `Object.values(record)`.
+   * @param {object}           state  - Shared mutable render state (same shape as in `_performDrawHeaders`).
+   * @returns {void}
+   */
   _performDrawRow(doc, record, state) {
     let maxHeight = 0; const values = Object.values(record); doc.fontSize(state.dynamicFontSize);
     values.forEach((val, i) => {
@@ -58,6 +121,21 @@ class StreamingPdfGenerator {
     doc.moveDown(0.2);
   }
 
+  /**
+   * Renders the page footer at the bottom of the current page.
+   *
+   * The footer contains a centred line with the current page number and a
+   * `"Go To Table Of Contents"` hyperlink that uses PDFKit's `goTo` option to
+   * jump to the named destination `'TOC_TOP'` registered on the cover page.
+   *
+   * This method is a no-op during the dry-run pass (`state.isReal === false`).
+   *
+   * @param {import('pdfkit')} doc   - Active PDFKit document instance.
+   * @param {object}           state - Shared mutable render state.
+   * @param {boolean} state.isReal  - If `false`, the method returns immediately.
+   * @param {number}  state.pageNum - The logical page number printed in the footer.
+   * @returns {void}
+   */
   _performDrawFooter(doc, state) {
     if (!state.isReal) return;
     const bm = doc.page.margins.bottom; doc.page.margins.bottom = 0;
@@ -73,6 +151,26 @@ class StreamingPdfGenerator {
     doc.page.margins.bottom = bm; doc.fillColor('black');
   }
 
+  /**
+   * Executes the full 2-pass PDF generation pipeline and writes the output file.
+   *
+   * **Pass 1 — Structure analysis (dry run):**
+   * Creates an in-memory `PDFDocument` that is never piped to disk. Streams the
+   * JSON source and simulates `_performDrawHeaders` / `_performDrawRow` to compute
+   * exact page spans. The result is stored in `reportMap` as an array of
+   * `{ title, startPage, endPage }` entries.
+   *
+   * **Pass 2 — Real render:**
+   * Creates the final `PDFDocument` piped to `this.outputFileName`. Renders:
+   *   - Cover page: report title + clickable TOC built from `reportMap`,
+   *     with dot-leader lines and `goTo` hyperlinks.
+   *   - Content pages: groups rendered one record at a time, with page breaks,
+   *     re-drawn column headers, and PDF bookmark entries.
+   *
+   * @returns {Promise<void>} Resolves when `doc.end()` has been called and the
+   *   write stream has finished flushing all bytes to disk.
+   * @throws {Error} If the JSON stream emits an error during either pass.
+   */
   async generate() {
     console.log(`Analyzing PDF structure...`);
     const docSim = new PDFDocument({ margin: 30, size: 'A4' });

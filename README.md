@@ -75,14 +75,15 @@ The entry-point (`index.js`) exposes a fluent `ReportGenerator` Facade that dele
 
 ```text
 temir-report/
+├── bin/
+│   └── cli.js             # CLI entry point  (temir-report generate …)
 ├── generators/
 │   ├── HtmlGenerator.js   # Streaming HTML + Virtual Grid engine
 │   ├── PdfGenerator.js    # 2-pass streaming PDF + TOC engine
 │   └── ExcelGenerator.js  # Streaming Excel + embedded photos engine
 ├── utils/
 │   └── StreamUtils.js     # getStream() helper + shared PDF layout config
-├── index.js               # ReportGenerator facade & CLI entry point
-├── data.json              # Example large-scale data source (gitignored)
+├── index.js               # ReportGenerator facade (programmatic API)
 ├── package.json
 └── .gitignore
 ```
@@ -93,12 +94,26 @@ temir-report/
 
 **Prerequisites:** Node.js ≥ 18 and npm.
 
+### As an npm package (recommended)
+
 ```bash
-# Clone the repository
+npm install temir-report
+```
+
+### Global CLI install
+
+```bash
+npm install -g temir-report
+
+# Verify
+temir-report --help
+```
+
+### From source
+
+```bash
 git clone https://github.com/merttopal7/temir-report.git
 cd temir-report
-
-# Install dependencies
 npm install
 ```
 
@@ -110,21 +125,23 @@ npm install
 
 ## Quick Start
 
-### Run the built-in demo
+### CLI (after global install)
 
 ```bash
-node index.js
+# PDF
+temir-report generate -s data.json -t pdf -o report.pdf -T "Q2 Executive Report"
+
+# Excel
+temir-report generate -s data.json -t excel -o report.xlsx
+
+# HTML Dashboard
+temir-report generate -s data.json -t html -o dashboard.html -T "Sales Dashboard"
 ```
 
-This generates three files from `data.json`:
-- `executive_report.html`
-- `executive_report.pdf`
-- `executive_report.xlsx`
-
-### Use as a module — file path source
+### Programmatic API
 
 ```javascript
-const ReportGenerator = require('./index.js');
+const ReportGenerator = require('temir-report');
 
 (async () => {
   const generator = new ReportGenerator();
@@ -151,6 +168,17 @@ const ReportGenerator = require('./index.js');
     .generate('report.xlsx');
 })();
 ```
+
+### Run the built-in demo (from source only)
+
+```bash
+node index.js
+```
+
+This generates three files from `data.json` (must exist in the project root):
+- `executive_report.html`
+- `executive_report.pdf`
+- `executive_report.xlsx`
 
 ### Use as a module — inline JSON string source
 
@@ -187,6 +215,21 @@ const ReportGenerator = require('./index.js');
 ```
 
 > **Note:** When passing a JSON string, the entire payload is held in memory. Only use this for datasets that comfortably fit in RAM. For large datasets (100 MB+) always prefer a file path so the streaming pipeline can process the data incrementally.
+
+---
+
+## CLI Reference
+
+```
+Usage: temir-report generate [options]
+
+Options:
+  --source,  -s  <path>    Path to JSON data source file  (required)
+  --output,  -o  <path>    Output file path               (required)
+  --type,    -t  <format>  pdf | excel | html             (default: pdf)
+  --title,   -T  <string>  Report title                   (default: "Report")
+  --help,    -h            Show this help message
+```
 
 ---
 
@@ -577,4 +620,4 @@ This indicates the stream back-pressure is not being respected, or there is a ve
 
 ## License
 
-ISC
+MIT

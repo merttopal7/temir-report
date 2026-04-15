@@ -7,8 +7,60 @@ const { getStream, USE_SHARP } = require('../utils/StreamUtils');
 // sharp is only loaded when USE_SHARP is enabled to avoid native binary errors
 const sharp = USE_SHARP ? require('sharp') : null;
 
+/**
+ * Generates a multi-sheet Excel (XLSX) workbook from a streaming JSON source.
+ *
+ * Each top-level group object in the JSON maps to a separate worksheet. Sheet
+ * names are automatically derived from the group's `title` field and truncated
+ * to 31 characters to comply with Excel's sheet-name limit.
+ *
+ * When `USE_SHARP` is `true`, image columns are compressed to 120×120 px JPEG
+ * at 75% quality before being embedded as thumbnail photos. Each unique image
+ * path is processed only once — subsequent rows reuse the cached workbook image
+ * ID, preventing redundant disk reads and re-compression.
+ *
+ * When `USE_SHARP` is `false`, raw file bytes are embedded directly using the
+ * file's original extension. No resizing or re-encoding is performed.
+ */
 class ExcelGenerator {
+  /**
+   * @param {string} source         - File path or serialized JSON string (see `utils/StreamUtils.getStream`).
+   * @param {string} outputFileName - Destination `.xlsx` file path.
+   */
   constructor(source, outputFileName) { this.source = source; this.outputFileName = outputFileName; }
+  /**
+   * Streams the JSON source and builds the Excel workbook record-by-record.
+   *
+   * **Streaming state machine:**
+   * The JSON stream emits `stream-json` token objects. A set of boolean flags
+   * (`isTitleKey`, `inColumnsArr`, `inItemsArr`) tracks which part of a group
+   * object is currently being read. `stream-json/assembler` buffers `columns`
+   * and individual `items` records into plain JS objects; the outer array is
+   * never fully buffered.
+   *
+   * **Per-group processing:**
+   * When the first record of a group is encountered, a new `ExcelJS.Worksheet`
+   * is created with bold column headers. Column titles come from the `columns`
+   * metadata array; if a title is missing, the record key is used as a fallback
+   * (snake_case converted to UPPER CASE).
+   *
+   * **Image handling:**
+   * For cells whose column `type` is `'image'` and whose value is a path to an
+   * existing file:
+   * - `USE_SHARP = true`: resizes to 120×120 px JPEG via `sharp`, registers with
+   *   `workbook.addImage()`, and places the thumbnail with `sheet.addImage()`.
+   * - `USE_SHARP = false`: reads raw bytes with `fs.readFileSync()`, normalises
+   *   `'jpg'` to `'jpeg'` for ExcelJS compatibility, and embeds without resizing.
+   * In both cases the image ID is cached in `imageCache` (keyed by file path)
+   * so each unique image is processed only once.
+   *
+   * Back-pressure is respected: the stream is paused while async image
+   * compression runs and resumed immediately after.
+   *
+   * @returns {Promise<void>} Resolves after `workbook.xlsx.writeFile()` completes.
+   * @throws {Error} If the JSON stream emits an error, or if a critical image
+   *   operation fails outside the per-cell try/catch.
+   */
   async generate() {
     console.log(`Starting Excel generation with Photos...`);
     const workbook = new ExcelJS.Workbook();

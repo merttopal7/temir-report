@@ -6,15 +6,83 @@ const { getStream, USE_SHARP } = require('../utils/StreamUtils');
 // sharp is only loaded when USE_SHARP is enabled to avoid native binary errors
 const sharp = USE_SHARP ? require('sharp') : null;
 
+/**
+ * Generates a self-contained, interactive HTML dashboard from a streaming JSON source.
+ *
+ * The output is a single `.html` file with no external dependencies. All CSS,
+ * JavaScript, and images are embedded inline. It supports:
+ *   - **Dark / Light theme** — toggled in the UI, persisted via `localStorage`.
+ *   - **Collapsible sidebar** — auto-populated navigation links for every group.
+ *   - **Virtual grid / JIT rendering** — only the visible page slice (default: 50 rows)
+ *     is ever written to the DOM, keeping the browser responsive even for 100,000+ records.
+ *   - **Real-time search** — filters operate on the in-memory JS array, not the DOM.
+ *   - **Smart pagination** — configurable rows-per-page (10/25/50/100/250), persisted.
+ *   - **Print mode** — `@media print` hides UI chrome and paginates groups for paper output.
+ *
+ * **Image compression strategy (server-side, at generation time):**
+ * When `USE_SHARP` is `true`, each unique image path is compressed once to WebP
+ * at 300×300 px / 80% quality, base64-encoded, and injected as a CSS class
+ * (`.img-asset-N { content: url("data:image/webp;base64,...") }`). The class name
+ * is then embedded in the JSON data for that row. All subsequent rows referencing
+ * the same file reuse the same CSS class — the image bytes are in the document
+ * only once. This can reduce file size by up to 1400× compared to per-row inline `src`.
+ *
+ * When `USE_SHARP` is `false`, the raw file bytes are base64-encoded directly
+ * and embedded using the original file extension as the MIME type.
+ *
+ * **Script-splitting trick:**
+ * Because image `<style>` blocks must be injected between JSON chunks inside a
+ * `<script type="application/json">` tag (which the browser treats as opaque text),
+ * the generator closes the active `<script>` tag, writes the `<style>` block, then
+ * immediately opens a new `<script class="group-data-store">` to continue the JSON
+ * stream. The client-side bootstrap reassembles all chunks by joining their
+ * `textContent` before calling `JSON.parse()`.
+ */
 class StreamingHtmlGenerator {
+  /**
+   * @param {string} source          - File path or serialized JSON string (see `utils/StreamUtils.getStream`).
+   * @param {string} outputFileName  - Destination `.html` file path.
+   * @param {object} [options={}]    - Generator options.
+   * @param {string} [options.reportTitle='Streaming Report']
+   *   Title shown in the browser tab (`<title>`) and top-navigation `<h1>`.
+   */
   constructor(source, outputFileName, options = {}) {
     this.source = source;
     this.outputFileName = outputFileName;
     this.reportTitle = options.reportTitle || 'Streaming Report';
+    /** @type {Map<string, string|null>} Maps absolute image file paths to their assigned CSS class name. */
     this.imageCache = new Map();
+    /** @type {number} Monotonically increasing counter used to generate unique CSS class names. */
     this.imageOrderId = 0;
   }
 
+  /**
+   * Runs the streaming HTML generation pipeline and writes the output file.
+   *
+   * **Server-side pipeline (generation time):**
+   * 1. Opens a `WriteStream` to `this.outputFileName`.
+   * 2. Writes the HTML shell: `<!DOCTYPE html>`, `<head>` with all CSS, and
+   *    the static `<aside>` sidebar and `<header>` markup.
+   * 3. Streams the JSON source token-by-token via `stream-json` + `stream-chain`.
+   *    For each group:
+   *    - On the first record: writes the `<section>`, table headers, and opens
+   *      a `<script type="application/json">` data store tag.
+   *    - For every record: serialises the row as a JSON array element. Image
+   *      columns are compressed (or read raw) and injected as CSS classes using
+   *      the script-splitting technique; cell values are replaced with
+   *      `{ isImg: true, className: 'img-asset-N' }` descriptors.
+   *    - On group end: closes the `</script></section>` block.
+   * 4. Writes the client-side `<script>` bootstrap (virtual grid engine, search,
+   *    pagination, theme/sidebar persistence) and closes `</body></html>`.
+   *
+   * **Back-pressure:** The stream is paused before any async `sharp` call and
+   * resumed immediately after, preventing out-of-order writes.
+   *
+   * @returns {Promise<void>} Resolves when `out.end()` has been called and all
+   *   bytes have been written to disk.
+   * @throws {Error} If the JSON stream emits an error or an image read fails
+   *   outside of the per-cell try/catch guard.
+   */
   async generate() {
     console.log("Starting Streaming HTML generation with Nav & Page Control...");
     const out = fs.createWriteStream(this.outputFileName);

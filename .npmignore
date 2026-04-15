@@ -1,0 +1,20 @@
+# Large data & generated output — exclude from npm publish
+data.json
+*.pdf
+*.xlsx
+*.html
+
+# Dev & OS artifacts
+.git/
+.gitignore
+.vscode/
+.idea/
+*.log
+logs/
+npm-debug.log*
+
+# Temp files
+temp/
+tmp/
+.cache/
+*.webp
